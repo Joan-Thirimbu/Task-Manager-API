@@ -8,6 +8,15 @@ use Illuminate\Support\Facades\Auth;
 
 class TaskController extends Controller
 {
+    protected function authorizeUser(Task $task)
+    {
+        $user = Auth::user();
+    
+        \Log::info("User {$user->id} with role {$user->role} trying to access task owned by {$task->user_id}");
+
+        return $user->id === $task->user_id || $user->role === 'admin';
+    }
+
     public function index(Request $request)
     {
         $query = Task::query();
@@ -15,16 +24,16 @@ class TaskController extends Controller
         if (!auth()->user()->isAdmin()) {
             $query->where('user_id', auth()->id());
         }
-    
+
         if ($request->has('status')) {
             $query->where('status', $request->status);
         }
-    
+
         $tasks = $query->latest()->paginate(10);
-    
+
         return response()->json($tasks);
     }
-    
+
     public function store(Request $request)
     {
         $request->validate([
@@ -42,47 +51,48 @@ class TaskController extends Controller
 
         return response()->json($task, 201);
     }
-    
+
     public function show(Task $task)
     {
-        $user = Auth::user();
-
-        if ($user->id !== $task->user_id && $user->role !== 'admin') {
+        if (!$this->authorizeUser($task)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
         return response()->json($task);
     }
-    
+
     public function update(Request $request, Task $task)
     {
         $user = Auth::user();
 
-        if ($user->id !== $task->user_id && $user->role !== 'admin') {
+        if (!$this->authorizeUser($task)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
+        
+        if ($user->role !== 'admin' && $request->has('user_id')) {
+            return response()->json(['message' => 'Not authorized to change that value'], 403);
+        }
 
-        $request->validate([
+        $rules = [
             'title' => 'sometimes|string|max:255',
             'description' => 'nullable|string',
             'status' => 'in:pending,completed',
-            'user_id' => 'sometimes|exists:users,id',
-        ]);
+        ];
+        
+        if ($user->role === 'admin') {
+            $rules['user_id'] = 'sometimes|exists:users,id';
+        }
 
-        $data = $user->role === 'admin'
-        ? $request->all()
-        : $request->only(['title', 'description', 'status']);
+        $validatedData = $request->validate($rules);
 
-        $task->update($data);
+        $task->update($validatedData);
 
         return response()->json($task);
     }
-    
+
     public function destroy(Task $task)
     {
-        $user = Auth::user();
-
-        if ($user->id !== $task->user_id && $user->role !== 'admin') {
+        if (!$this->authorizeUser($task)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
@@ -91,17 +101,17 @@ class TaskController extends Controller
         return response()->json(['message' => 'Task soft deleted successfully']);
     }
 
-    // force delete 
+    // force delete
     public function forceDelete($id)
     {
         $task = Task::withTrashed()->findOrFail($id);
-        $user = Auth::user();
 
-        if ($user->id !== $task->user_id && $user->role !== 'admin') {
+        if (!$this->authorizeUser($task)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
         $task->forceDelete();
+
         return response()->json(['message' => 'Task permanently deleted successfully']);
     }
 
@@ -110,11 +120,9 @@ class TaskController extends Controller
     {
         $user = Auth::user();
 
-        if ($user->role === 'admin') {
-            $tasks = Task::onlyTrashed()->paginate(10);
-        } else {
-            $tasks = Task::onlyTrashed()->where('user_id', $user->id)->paginate(10);
-        }
+        $tasks = $user->role === 'admin'
+            ? Task::onlyTrashed()->paginate(10)
+            : Task::onlyTrashed()->where('user_id', $user->id)->paginate(10);
 
         return response()->json($tasks);
     }
@@ -123,9 +131,8 @@ class TaskController extends Controller
     public function restore($id)
     {
         $task = Task::onlyTrashed()->findOrFail($id);
-        $user = Auth::user();
 
-        if ($user->id !== $task->user_id && $user->role !== 'admin') {
+        if (!$this->authorizeUser($task)) {
             return response()->json(['message' => 'Unauthorized'], 403);
         }
 
